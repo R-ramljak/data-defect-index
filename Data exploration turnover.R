@@ -124,15 +124,17 @@ SMUB <- function(data, phi) {
     mutate(num = phi + (1 - phi) * r, denom = phi * r + (1 - phi)) %>% 
     mutate(waf = num / denom) %>% 
     mutate(SMUB.estimate = waf * sdm) %>% 
-    mutate(corrected.mean = sample.mean.y + waf * sqrt(sample.var.y / sample.var.z) * (pop.mean.z - sample.mean.z))
+    mutate(estimated.mean = sample.mean.y + waf * sqrt(sample.var.y / sample.var.z) * (pop.mean.z - sample.mean.z))
   
   # true bias and true phi
-  bias <- (sample.mean.y - pop.mean.y) / pop.sd.y
-  e <- sqrt(sample.var.y / sample.var.z) * (pop.mean.z - sample.mean.z)
-  true.waf <- (pop.mean.y - sample.mean.y) / ( sqrt(sample.var.y / sample.var.z) * (pop.mean.z - sample.mean.z) )
-  true.phi <- (true.waf - r) / (1 - r - true.waf * r + true.waf)
-  true.phi2 <- (bias - sample.mean.y - e * r) / (e - e*r - bias*r + bias + sample.mean.y*r - sample.mean.y)
-  new <- sample.mean.y + true.waf * sqrt(sample.var.y / sample.var.z) * (pop.mean.z - sample.mean.z)
+  bias <- sample.mean.y - pop.mean.y
+  std.bias <- (sample.mean.y - pop.mean.y) / pop.sd.y
+  var.yz <- sqrt(sample.var.y / sample.var.z)
+  mean.diff.z <- sample.mean.z - pop.mean.z
+
+  true.waf <- bias / (var.yz * mean.diff.z)
+  true.phi <- (bias - r * var.yz * mean.diff.z) / ( (1 - r) * (bias + var.yz * mean.diff.z) )
+  true.estimated.mean <- sample.mean.y + true.waf * var.yz * (pop.mean.z - sample.mean.z) # different than mean.diff.z
   
   
   ## output organization
@@ -145,6 +147,7 @@ SMUB <- function(data, phi) {
                                  sample.mean.y = sample.mean.y,
                                  pop.mean.y = pop.mean.y,
                                  bias = bias,
+                                 std.bias = std.bias,
                                  r = r,
                                  true.waf = true.waf,
                                  true.phi = true.phi,
@@ -152,38 +155,51 @@ SMUB <- function(data, phi) {
                                  sample.mean.z = sample.mean.z,
                                  sample.var.y = sample.var.y,
                                  sample.var.z = sample.var.z,
+                                 var.yz = var.yz,
+                                 mean.diff.z = mean.diff.z,
                                  pop.mean.z = pop.mean.z,
-                                 new = new,
-                                 true.phi2 = true.phi2,
-                                 pop.sd.y = pop.sd.y)
+                                 pop.sd.y = pop.sd.y,
+                                 true.estimated.mean1 = true.estimated.mean)
 
   return(list(sensitivity.analysis = estimate,
               global.characteristics = global.characteristics))
 }
 
-e.helper <- data %>% 
-  filter(year.quarter == "Y:2015 Q:04") %>% 
-  select(y = log.turnover, z = wp, sample = selective.sam) %>% 
-  filter(sample == 1)
 
-e <- data %>% 
-  filter(year.quarter == "Y:2015 Q:04") %>% 
-  select(y = log.turnover, z = wp, sample = selective.sam) %>% 
-  mutate(z = z * sqrt( var(e.helper$y) / var(e.helper$z)))
+selected.data <- data %>% 
+  select(y = log.turnover, z = wp, sample = selective.sam, year.quarter) %>%
+  filter(sample == 1) %>% 
+  group_by(year.quarter) %>% 
+  summarise(std.var.sel.yz = sqrt( var(y) * var(z) ), .groups = "drop") %>% 
+  group_split(year.quarter) %>% 
+  map_df(~select(., std.var.sel.yz)) %>% 
+  deframe()
 
-d0 <- SMUB(data = e, phi = seq(0, 5, 0.1))
+data.final <- data %>% 
+  split(.$year.quarter) %>%
+  map(~select(., y = log.turnover, z = wp, sample = selective.sam)) %>% 
+  map2(., selected.data, ~mutate(.x, z = z * .y))
+  
+smub1 <- data.final %>% 
+  map(~SMUB(data = ., phi = seq(0, 5, 0.1)))
+
+# Comp. table global stats all quarters
+smub.ind.global <- smub1 %>% 
+  map_depth(1, ~as_tibble(.$global.characteristics)) %>% 
+  map_dfr(~select(., n.prop, bias, std.bias, mean.diff.z, r, true.phi, mean.diff.z), .id = "year.quarter")
 
 
 
 
-phi <- d0$global.characteristics$true.phi
-r <- d0$global.characteristics$r
-sdm <- ( d0$global.characteristics$sample.mean.z - d0$global.characteristics$pop.mean.z ) / sqrt(d0$global.characteristics$sample.var.z)
+# e.helper <- data %>%
+#   filter(year.quarter == "Y:2015 Q:04") %>%
+#   
+# 
+# e <- data %>% 
+#   filter(year.quarter == "Y:2015 Q:04") %>% 
+#   select(y = log.turnover, z = wp, sample = selective.sam) %>% 
+#   mutate(z = z * sqrt( var(e.helper$y) / var(e.helper$z)))
+# 
+# d1 <- SMUB(data = e, phi = seq(0, 5, 0.1))
 
-num <- phi + (1 - phi) * r
-denom <- phi * r + (1 - phi) 
-waf <- num / denom
-SMUB.estimate <- waf * sdm
-
-new <- d0$global.characteristics$sample.mean.y + waf * sqrt(d0$global.characteristics$sample.var.y / d0$global.characteristics$sample.var.z) * (d0$global.characteristics$pop.mean.z - d0$global.characteristics$sample.mean.z)
 
